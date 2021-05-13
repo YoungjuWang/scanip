@@ -16,47 +16,86 @@ limitations under the License.
 package cmd
 
 import (
-	"bytes"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
-	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	homedir "github.com/mitchellh/go-homedir"
-	"github.com/spf13/viper"
 	fastping "github.com/tatsushid/go-fastping"
 )
 
-var cidr string
-var cfgFile string
-var all bool
-var used bool
-var unused bool
-
-func Hosts(cidr string) map[string]string {
-	ip, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		panic(err)
-	}
-
-	ips := make(map[string]string)
-	for ip := ip.Mask(ipnet.Mask); ipnet.Contains(ip); inc(ip) {
-		ips[ip.String()] = "X"
-	}
-	return ips
+// IPList 는 결과 값들을 담을 struct.
+type IPList struct {
+	ip    string
+	state string
 }
 
-func inc(ip net.IP) {
-	for j := len(ip) - 1; j >= 0; j-- {
-		ip[j]++
-		if ip[j] > 0 {
-			break
+// GetIPList 는 CIDR 값을 받아서 IP List를 IpList struct에 넘겨줌.
+func GetIPList(cidr string) []IPList {
+	// convert string to cidr > ipv4Net
+	_, ipv4Net, err := net.ParseCIDR(cidr)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(3)
+	}
+
+	// convert ipv4Net address to uint32
+	// network is BigEndian
+	mask := binary.BigEndian.Uint32(ipv4Net.Mask)
+
+	// Get Start IP, Finish IP
+	start := binary.BigEndian.Uint32(ipv4Net.IP)
+	finish := (start & mask) | (mask ^ 0xffffffff)
+
+	// loop through addresses as uint32
+	il := []IPList{}
+	for i := start; i <= finish; i++ {
+		// convert back to net.IP
+		ip := make(net.IP, 4)
+		binary.BigEndian.PutUint32(ip, i)
+		pair := IPList{}
+		if i == start {
+			pair = IPList{ip.String(), "Network Address"}
+		} else if i == finish {
+			pair = IPList{ip.String(), "Broadcast Address"}
+		} else {
+			pair = IPList{ip.String(), "X"}
+		}
+		il = append(il, pair)
+	}
+
+	return il
+}
+
+// IPLIst 및 State 출력
+func PrintIPList(il []IPList, used bool, unused bool) {
+	fmt.Printf("IP_Address\t\tUsed\n")
+	fmt.Printf("=================================\n")
+	for _, ls := range il {
+		switch {
+		case used:
+			if ls.state == "O" || ls.state == "Network Address" || ls.state == "Broadcast Address" {
+				fmt.Printf("%s\t\t%s\n", ls.ip, ls.state)
+			}
+		case unused:
+			if ls.state == "X" {
+				fmt.Printf("%s\t\t%s\n", ls.ip, ls.state)
+			}
+		default:
+			fmt.Printf("%s\t\t%s\n", ls.ip, ls.state)
 		}
 	}
 }
+
+var (
+	cidr   string
+	all    bool
+	used   bool
+	unused bool
+)
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
@@ -65,57 +104,39 @@ var rootCmd = &cobra.Command{
 	Long:    `Using ICMP. Check used/unused ip addresses. If your system block ICMP packet, "scanip" cannot work well`,
 	Example: "scanip -c 192.168.0.0/24",
 	Run: func(cmd *cobra.Command, args []string) {
-		ipList := Hosts(cidr)
-
+		il := GetIPList(cidr)
 		p := fastping.NewPinger()
 
-		for ip := range ipList {
-			err := p.AddIP(ip)
+		// ping 목록에 ip들을 전달
+		for _, ls := range il {
+			err := p.AddIP(ls.ip)
 			if err != nil {
 				fmt.Println(err)
-				os.Exit(3)
+				os.Exit(4)
 			}
 		}
 
+		// ping 성공 시 ip의 status를 update
 		p.OnRecv = func(addr *net.IPAddr, rtt time.Duration) {
-			ipList[addr.String()] = "O"
+			for i := range il {
+				if il[i].ip == addr.String() {
+					il[i].state = "O"
+				}
+			}
 		}
+
+		// ping Check가 끝난 후 실행될 내용
 		p.OnIdle = func() {
-			fmt.Printf("IP_Address\t\tUsed\n")
-			fmt.Printf("=================================\n")
+			PrintIPList(il, used, unused)
 		}
+
+		// ping 실행
 		err := p.Run()
 		if err != nil {
 			fmt.Println(err)
+			os.Exit(11)
 		}
-
-		var keys []net.IP
-		for k := range ipList {
-			keys = append(keys, net.ParseIP(k))
-		}
-		sort.Slice(keys, func(i, j int) bool {
-			return bytes.Compare(keys[i], keys[j]) < 0
-		})
-
-		for _, key := range keys {
-			switch {
-			case used:
-				if ipList[key.String()] == "O" {
-					fmt.Printf("%s\t\t%s\n", key, ipList[key.String()])
-				}
-			case unused:
-				if ipList[key.String()] == "X" {
-					fmt.Printf("%s\t\t%s\n", key, ipList[key.String()])
-				}
-			default:
-				fmt.Printf("%s\t\t%s\n", key, ipList[key.String()])
-			}
-		}
-		fmt.Printf("\nCheck Finished.\n")
 	},
-	// Uncomment the following line if your bare application
-	// has an action associated with it:
-	// Run: func(cmd *cobra.Command, args []string) { },
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -125,43 +146,15 @@ func Execute() {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
+	//cobra.OnInitialize(initConfig)
 
 	// Here you will define your flags and configuration settings.
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
 
-	//rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.scanip.yaml)")
 	rootCmd.Flags().StringVarP(&cidr, "cidr", "c", "", "Network CIDR (required)")
 	rootCmd.MarkFlagRequired("cidr")
 	rootCmd.Flags().BoolVarP(&all, "all", "a", true, "Print all addresses")
 	rootCmd.Flags().BoolVarP(&used, "used", "o", false, "Print used addresses")
 	rootCmd.Flags().BoolVarP(&unused, "unused", "x", false, "Print unused addresses")
-
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	//rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-}
-
-// initConfig reads in config file and ENV variables if set.
-func initConfig() {
-	if cfgFile != "" {
-		// Use config file from the flag.
-		viper.SetConfigFile(cfgFile)
-	} else {
-		// Find home directory.
-		home, err := homedir.Dir()
-		cobra.CheckErr(err)
-
-		// Search config in home directory with name ".scanip" (without extension).
-		viper.AddConfigPath(home)
-		viper.SetConfigName(".scanip")
-	}
-
-	viper.AutomaticEnv() // read in environment variables that match
-
-	// If a config file is found, read it in.
-	if err := viper.ReadInConfig(); err == nil {
-		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
-	}
 }
