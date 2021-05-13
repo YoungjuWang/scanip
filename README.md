@@ -1,7 +1,15 @@
+### Download / Installation
+
+```
+# wget https://raw.githubusercontent.com/YoungjuWang/scanip/master/scanip/scanip
+# chmod +x scanip; mv scanip /usr/local/bin/
+```
+
 ### Help
 ---
 
 ```
+# scanip --help
 Using ICMP. Check used/unused ip addresses. If your system block ICMP packet, "scanip" cannot work well
 
 Usage:
@@ -26,7 +34,7 @@ $ sudo scanip -c 172.16.20.0/24
 
 IP_Address              Used
 =================================
-172.16.20.0             X
+172.16.20.0		Network Address
 172.16.20.1             O
 172.16.20.2             O
 172.16.20.3             X
@@ -50,6 +58,7 @@ used
 sudo scanip -c 172.16.20.0/24 -o
 IP_Address              Used
 =================================
+172.16.20.0		Network Address
 172.16.20.1             O
 172.16.20.2             O
 172.16.20.4             O
@@ -57,6 +66,7 @@ IP_Address              Used
 172.16.20.15            O
 172.16.20.16            O
 (...)
+172.16.20.255		Broadcast Address
 ```
 
 unused
@@ -65,7 +75,6 @@ unused
 sudo scanip -c 172.16.20.0/24 -x
 IP_Address              Used
 =================================
-172.16.20.0             X
 172.16.20.3             X
 172.16.20.5             X
 (...)
